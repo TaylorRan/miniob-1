@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)   # 强制要求必须达到该版本，版本不够直接报错，建议加上
+set(CMAKE_CXX_EXTENSIONS OFF)         # 关闭GCC编译器私有扩展，使用标准C++，规范项目，建议加上
 
 project(minidb)
 

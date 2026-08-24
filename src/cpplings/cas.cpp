@@ -18,6 +18,9 @@ See the Mulan PSL v2 for more details. */
 #include <thread>    // std::thread
 #include <vector>    // std::vector
 #include <cassert>   // assert
+#include <atomic>
+// #include <mutex>
+// static std::mutex mtx;
 
 // 一个简单的链表节点
 struct Node
@@ -26,15 +29,20 @@ struct Node
   Node *next;
 };
 
-Node *list_head(nullptr);
+std::atomic<Node*> list_head(nullptr);
 
 // 向 `list_head` 中添加一个值为 `val` 的 Node 节点。
 void append_node(int val)
 {
-  Node *old_head = list_head;
-  Node *new_node = new Node{val, old_head};
-  // TODO: 使用 compare_exchange_strong 来使这段代码线程安全。
-  list_head = new_node;
+  // mtx.lock();
+  Node *new_node = new Node{val, nullptr};
+  Node *old_head = list_head.load();
+  do{
+    new_node->next = old_head;
+  }while(!list_head.compare_exchange_strong(old_head, new_node));
+  
+  
+  // mtx.unlock();
 }
 
 int main()
