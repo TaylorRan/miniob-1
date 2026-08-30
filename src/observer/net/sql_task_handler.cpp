@@ -22,15 +22,18 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 {
   // 工作线程入口：读取一条请求 -> 处理这条 SQL -> 把结果写回客户端。
   SessionEvent *event = nullptr;
+  // read_event 从 socket 读出一条完整 SQL；失败则直接返回，通常意味着连接异常。
   RC rc = communicator->read_event(event);
   if (OB_FAIL(rc)) {
     return rc;
   }
 
   if (nullptr == event) {
+    // 没有读到请求（如 CLI 空输入），什么都不做直接返回成功。
     return RC::SUCCESS;
   }
 
+  // 先交给 SessionStage 做会话级的准备工作，并把当前线程会话绑定到 event 的会话。
   session_stage_.handle_request2(event);
 
   // SQLStageEvent 在 SessionEvent 之上封装 SQL 文本，供后续各阶段传递。
@@ -38,6 +41,7 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 
   rc = handle_sql(&sql_event);
   if (OB_FAIL(rc)) {
+    // 处理失败时记录错误码，但仍会走到下面 write_result 把错误状态回给客户端。
     LOG_TRACE("failed to handle sql. rc=%s", strrc(rc));
     event->sql_result()->set_return_code(rc);
   }
@@ -47,6 +51,7 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
   // 处理完成后，把结果（状态码、表头、数据行）写回客户端。
   rc = communicator->write_result(event, need_disconnect);
   LOG_INFO("write result return %s", strrc(rc));
+  // 本次请求处理完毕，清空当前请求和当前会话，避免残留状态影响下一条 SQL。
   event->session()->set_current_request(nullptr);
   Session::set_current_session(nullptr);
 
@@ -86,6 +91,8 @@ RC SqlTaskHandler::handle_sql(SQLStageEvent *sql_event)
   }
 
   rc = optimize_stage_.handle_request(sql_event);
+  // optimize 阶段对 DDL 等语句可能返回 UNIMPLEMENTED，这是允许的；
+  // 真正失败时才中断流程。
   if (rc != RC::UNIMPLEMENTED && rc != RC::SUCCESS) {
     LOG_TRACE("failed to do optimize. rc=%s", strrc(rc));
     return rc;

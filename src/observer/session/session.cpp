@@ -21,10 +21,12 @@ See the Mulan PSL v2 for more details. */
 Session &Session::default_session()
 {
   // 返回一个默认会话。普通网络连接在 accept 时都会以它为模板创建新的 Session。
+  // static 局部变量只初始化一次，整个进程共享同一个默认会话对象。
   static Session session;
   return session;
 }
 
+// 拷贝构造只复制“当前数据库”这一项，不复制事务和当前请求等运行时状态。
 Session::Session(const Session &other) : db_(other.db_) {}
 
 Session::~Session()
@@ -38,6 +40,7 @@ Session::~Session()
 
 const char *Session::get_current_db_name() const
 {
+  // 未选择数据库时返回空字符串，避免调用方拿到空指针。
   if (db_ != nullptr)
     return db_->name();
   else
@@ -51,6 +54,7 @@ void Session::set_current_db(const string &dbname)
   // 从全局存储处理器中按名字查找数据库，找到后设为当前数据库。
   DefaultHandler &handler = *GCTX.handler_;
   Db             *db      = handler.find_db(dbname.c_str());
+  // 数据库不存在时不切换，只记录日志；这样不会破坏当前已有的 db_。
   if (db == nullptr) {
     LOG_WARN("no such database: %s", dbname.c_str());
     return;
@@ -62,6 +66,8 @@ void Session::set_current_db(const string &dbname)
 
 void Session::set_trx_multi_operation_mode(bool multi_operation_mode)
 {
+  // 多语句事务模式：begin 之后多次操作再显式 commit/rollback；
+  // 否则每条 SQL 结束后自动提交/回滚并销毁事务。
   trx_multi_operation_mode_ = multi_operation_mode;
 }
 
@@ -75,6 +81,7 @@ Trx *Session::current_trx()
   */
   // 懒创建事务：第一次需要事务时才通过 trx_kit 创建，并绑定当前数据库的日志处理器。
   if (trx_ == nullptr) {
+    // create_trx 是事务工厂入口，会根据配置返回 MVCC 或 Vacuous 等事务实现。
     trx_ = db_->trx_kit().create_trx(db_->log_handler());
   }
   return trx_;
@@ -99,4 +106,5 @@ Session *Session::current_session() { return thread_session; }
 
 void Session::set_current_request(SessionEvent *request) { current_request_ = request; }
 
+// current_request_ 记录本会话当前正在处理的请求，处理完后会被清空。
 SessionEvent *Session::current_request() const { return current_request_; }

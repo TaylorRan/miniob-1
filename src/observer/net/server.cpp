@@ -44,6 +44,7 @@ using namespace common;
 
 ServerParam::ServerParam()
 {
+  // 默认监听所有网卡地址、使用配置里的最大连接数和端口。
   listen_addr        = INADDR_ANY;
   max_connection_num = MAX_CONNECTION_NUM_DEFAULT;
   port               = PORT_DEFAULT;
@@ -53,6 +54,7 @@ NetServer::NetServer(const ServerParam &input_server_param) : Server(input_serve
 
 NetServer::~NetServer()
 {
+  // 如果还没关闭，先调用 shutdown 清理监听循环。
   if (started_) {
     shutdown();
   }
@@ -61,6 +63,7 @@ NetServer::~NetServer()
 int NetServer::set_non_block(int fd)
 {
   // 把 socket 设为非阻塞模式，避免线程在 read/accept 上卡死。
+  // 先取当前 flags，再叠加 O_NONBLOCK 后写回。
   int flags = fcntl(fd, F_GETFL);
   if (flags == -1) {
     LOG_INFO("Failed to get flags of fd :%d. ", fd);
@@ -90,6 +93,7 @@ void NetServer::accept(int fd)
     return;
   }
 
+  // 把二进制 IP 地址转成人类可读的字符串，用于日志和后续记录对端地址。
   char ip_addr[24];
   if (inet_ntop(AF_INET, &addr.sin_addr, ip_addr, sizeof(ip_addr)) == nullptr) {
     LOG_ERROR("Failed to get ip address of client, %s", strerror(errno));
@@ -97,6 +101,7 @@ void NetServer::accept(int fd)
     return;
   }
   stringstream address;
+  // 组合成 "ip:port" 形式的地址字符串。
   address << ip_addr << ":" << addr.sin_port;
   string addr_str = address.str();
 
@@ -158,6 +163,7 @@ int NetServer::start_tcp_server()
   int                ret = 0;
   struct sockaddr_in sa;
 
+  // 创建监听 socket，SOCK_STREAM 表示 TCP 流式连接。
   server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
   if (server_socket_ < 0) {
     LOG_ERROR("socket(): can not create server socket: %s.", strerror(errno));
@@ -165,6 +171,7 @@ int NetServer::start_tcp_server()
   }
 
   int yes = 1;
+  // SO_REUSEADDR 允许服务重启后立即复用端口，避免 TIME_WAIT 导致 bind 失败。
   ret     = setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
   if (ret < 0) {
     LOG_ERROR("Failed to set socket option of reuse address: %s.", strerror(errno));
@@ -180,6 +187,7 @@ int NetServer::start_tcp_server()
   }
 
   memset(&sa, 0, sizeof(sa));
+  // 填充监听地址：IP 任意、端口来自配置。
   sa.sin_family      = AF_INET;
   sa.sin_port        = htons(server_param_.port);
   sa.sin_addr.s_addr = htonl(server_param_.listen_addr);
@@ -191,6 +199,7 @@ int NetServer::start_tcp_server()
     return -1;
   }
 
+  // listen 后 socket 进入监听状态，等待客户端连接。
   ret = listen(server_socket_, server_param_.max_connection_num);
   if (ret < 0) {
     LOG_ERROR("listen(): can not listen server socket, %s", strerror(errno));
@@ -220,6 +229,7 @@ int NetServer::start_unix_socket_server()
     return -1;
   }
 
+  // Unix socket 路径对应文件系统里的一个文件，先删掉旧的，避免 bind 失败。
   unlink(server_param_.unix_socket_path.c_str());  /// 如果不删除源文件，可能会导致bind失败
 
   struct sockaddr_un sockaddr;
@@ -279,6 +289,7 @@ int NetServer::serve()
     poll_fd.revents = 0;
 
     while (started_) {
+      // 等待监听 socket 可读；500ms 超时后再次检查 started_ 状态。
       int ret = poll(&poll_fd, 1, 500);
       if (ret < 0) {
         LOG_WARN("[listen socket] poll error. fd = %d, ret = %d, error=%s", poll_fd.fd, ret, strerror(errno));
@@ -300,6 +311,7 @@ int NetServer::serve()
 
   thread_handler_->stop();
   thread_handler_->await_stop();
+  // 清理线程处理器资源，避免泄漏。
   delete thread_handler_;
   thread_handler_ = nullptr;
 
@@ -312,6 +324,7 @@ void NetServer::shutdown()
 {
   LOG_INFO("NetServer shutting down");
 
+  // 把 started_ 置为 false，让 serve 主循环和 accept 退出。
   // cleanup
   started_ = false;
 }
@@ -329,6 +342,7 @@ CliServer::~CliServer()
 
 int CliServer::serve()
 {
+  // CLI 模式不监听网络，直接使用标准输入/输出，方便本地调试。
   CliCommunicator communicator;
 
   RC rc = communicator.init(STDIN_FILENO, make_unique<Session>(Session::default_session()), "stdin");
@@ -340,6 +354,7 @@ int CliServer::serve()
   started_ = true;
 
   SqlTaskHandler task_handler;
+  // 循环读取 stdin 里的每条命令，直到 exit 或发生错误。
   while (started_ && !communicator.exit()) {
     rc = task_handler.handle_event(&communicator);
     if (OB_FAIL(rc)) {

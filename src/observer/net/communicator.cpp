@@ -28,17 +28,20 @@ RC Communicator::init(int fd, unique_ptr<Session> session, const string &addr)
   fd_      = fd;
   session_ = std::move(session);
   addr_    = addr;
+  // writer_ 是输出通道；read_event/write_result 等接口会在子类中实现具体协议收发。
   writer_  = new BufferedWriter(fd_);
   return RC::SUCCESS;
 }
 
 Communicator::~Communicator()
 {
+  // 先关闭 socket，避免后续继续使用已经无效的连接。
   if (fd_ >= 0) {
     close(fd_);
     fd_ = -1;
   }
 
+  // 再释放缓冲写出器，注意关闭时它内部还会把剩余缓冲 flush 一次。
   if (writer_ != nullptr) {
     delete writer_;
     writer_ = nullptr;

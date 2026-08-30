@@ -25,6 +25,7 @@ PlainCommunicator::PlainCommunicator()
   // 默认文本协议的“消息结束符”是 '\0'。
   // 客户端发送 SQL 时会把字符串末尾的 '\0' 一起发来，服务端据此判断一条消息是否完整。
   send_message_delimiter_.assign(1, '\0');
+  // 调试信息每行以 "# " 开头，方便客户端区分正常结果和调试输出。
   debug_message_prefix_.resize(2);
   debug_message_prefix_[0] = '#';
   debug_message_prefix_[1] = ' ';
@@ -39,31 +40,38 @@ RC PlainCommunicator::read_event(SessionEvent *&event)
   int data_len = 0;
   int read_len = 0;
 
+  // 单条消息最长 8192 字节；超过会返回 IOERR_TOO_LONG。
   const int    max_packet_size = 8192;
   vector<char> buf(max_packet_size);
 
   // 持续接收消息，直到遇到'\0'。将'\0'遇到的后续数据直接丢弃没有处理，因为目前仅支持一收一发的模式
   // 也就是说：一次只处理一条 SQL，读到结束符 '\0' 就停止。
   while (true) {
+    // 从缓冲区的 data_len 偏移处继续读，把新数据接到旧数据后面。
     read_len = ::read(fd_, buf.data() + data_len, max_packet_size - data_len);
     if (read_len < 0) {
+      // EAGAIN 表示暂无数据，稍后再试；其他错误直接结束读取。
       if (errno == EAGAIN) {
         continue;
       }
       break;
     }
+    // read 返回 0 表示对端已关闭连接。
     if (read_len == 0) {
       break;
     }
 
+    // 如果读完后已经超过限制，记录长度并退出，后面统一返回“消息过长”。
     if (read_len + data_len > max_packet_size) {
       data_len += read_len;
       break;
     }
 
+    // 在本次读到的字节里查找 '\0'，找到就说明完整消息到此结束。
     bool msg_end = false;
     for (int i = 0; i < read_len; i++) {
       if (buf[data_len + i] == 0) {
+        // 把 '\0' 也计入 data_len，后面直接按这个长度使用数据。
         data_len += i + 1;
         msg_end = true;
         break;
@@ -102,6 +110,7 @@ RC PlainCommunicator::write_state(SessionEvent *event, bool &need_disconnect)
   const int     buf_size     = 2048;
   char         *buf          = new char[buf_size];
   const string &state_string = sql_result->state_string();
+  // 没有错误说明时，只回 SUCCESS/FAILURE；有说明则带上返回码和说明。
   if (state_string.empty()) {
     const char *result = RC::SUCCESS == sql_result->return_code() ? "SUCCESS" : "FAILURE";
     snprintf(buf, buf_size, "%s\n", result);
@@ -125,6 +134,7 @@ RC PlainCommunicator::write_state(SessionEvent *event, bool &need_disconnect)
 
 RC PlainCommunicator::write_debug(SessionEvent *request, bool &need_disconnect)
 {
+  // 只有会话打开了 SQL 调试开关，才输出调试信息。
   if (!session_->sql_debug_on()) {
     return RC::SUCCESS;
   }
@@ -132,6 +142,7 @@ RC PlainCommunicator::write_debug(SessionEvent *request, bool &need_disconnect)
   SqlDebug &sql_debug = request->sql_debug();
 
   const list<string> &debug_infos = sql_debug.get_debug_infos();
+  // 每条调试信息前加 "# " 前缀，并换行。
   for (auto &debug_info : debug_infos) {
     RC rc = writer_->writen(debug_message_prefix_.data(), debug_message_prefix_.size());
     if (OB_FAIL(rc)) {
@@ -175,6 +186,7 @@ RC PlainCommunicator::write_result(SessionEvent *event, bool &need_disconnect)
     }
   }
   if (!need_disconnect) {
+    // 最后补上 '\0' 结束符，让客户端知道一条完整响应结束。
     rc = writer_->writen(send_message_delimiter_.data(), send_message_delimiter_.size());
     if (OB_FAIL(rc)) {
       LOG_ERROR("Failed to send data back to client. ret=%s, error=%s", strrc(rc), strerror(errno));
@@ -182,6 +194,7 @@ RC PlainCommunicator::write_result(SessionEvent *event, bool &need_disconnect)
       return rc;
     }
   }
+  // 把所有缓冲数据真正刷到 socket。
   writer_->flush();  // TODO handle error
   return rc;
 }
@@ -202,6 +215,7 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   // 打开执行计划：这里会启动事务，并递归调用执行计划顶层算子的 open()。
   rc = sql_result->open();
   if (OB_FAIL(rc)) {
+    // open 失败时也要关闭结果并返回错误状态。
     sql_result->close();
     sql_result->set_return_code(rc);
     return write_state(event, need_disconnect);
@@ -214,6 +228,7 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   for (int i = 0; i < cell_num; i++) {
     const TupleCellSpec &spec  = schema.cell_at(i);
     const char          *alias = spec.alias();
+    // alias 非空才写；cell_num 为 0 的语句（如 DDL）没有表头。
     if (nullptr != alias || alias[0] != 0) {
       if (0 != i) {
         const char *delim = " | ";
@@ -271,9 +286,11 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
     sql_result->set_return_code(rc);
     return write_state(event, need_disconnect);
   } else {
+    // 正常返回数据后不需要断开连接，客户端可以继续发下一条 SQL。
     need_disconnect = false;
   }
 
+  // 数据写完后关闭执行计划，触发算子 close 和事务提交。
   RC rc_close = sql_result->close();
   if (OB_SUCC(rc)) {
     rc = rc_close;
@@ -291,6 +308,7 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
     assert(tuple != nullptr);
 
     int cell_num = tuple->cell_num();
+    // 每列之间用 " | " 分隔，行尾换行，形成易读的表格文本。
     for (int i = 0; i < cell_num; i++) {
       if (i != 0) {
         const char *delim = " | ";
@@ -304,6 +322,7 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
       }
 
       Value value;
+      // 从元组中取出一列的值，再转成字符串发送。
       rc = tuple->cell_at(i, value);
       if (rc != RC::SUCCESS) {
         LOG_WARN("failed to get tuple cell value. rc=%s", strrc(rc));
@@ -332,6 +351,7 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
   }
 
   if (rc == RC::RECORD_EOF) {
+    // RECORD_EOF 是正常的“没有更多数据”标志，转成成功返回。
     rc = RC::SUCCESS;
   }
   return rc;
@@ -341,6 +361,7 @@ RC PlainCommunicator::write_chunk_result(SqlResult *sql_result)
 {
   RC rc = RC::SUCCESS;
   Chunk chunk;
+  // chunk 模式一次取一批行，减少函数调用次数，适合向量化执行。
   while (RC::SUCCESS == (rc = sql_result->next_chunk(chunk))) {
     int col_num = chunk.column_num();
     for (int row_idx = 0; row_idx < chunk.rows(); row_idx++) {
@@ -376,6 +397,7 @@ RC PlainCommunicator::write_chunk_result(SqlResult *sql_result)
         return rc;
       }
     }
+    // 处理完当前 chunk 后清空，准备接收下一批数据。
     chunk.reset();
   }
 

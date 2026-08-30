@@ -33,6 +33,7 @@ public:
   {}
   ~Worker()
   {
+    // 线程还在运行就先停止并等待结束，确保对象析构前线程已退出。
     if (thread_ != nullptr) {
       stop();
       join();
@@ -41,12 +42,14 @@ public:
 
   RC start()
   {
+    // ref(*this) 把当前 Worker 对象包装成可调用对象，交给新线程执行 operator()。
     thread_ = new thread(ref(*this));
     return RC::SUCCESS;
   }
 
   RC stop()
   {
+    // 把运行标志置为 false，线程下一轮 poll 超时后会退出循环。
     running_ = false;
     return RC::SUCCESS;
   }
@@ -57,6 +60,7 @@ public:
       if (thread_->get_id() == this_thread::get_id()) {
         thread_->detach(); // 如果当前线程join当前线程，就会卡死
       } else {
+        // 等待工作线程真正结束，再安全删除线程对象。
         thread_->join();
       }
       delete thread_;
@@ -75,6 +79,7 @@ public:
     }
 
     struct pollfd poll_fd;
+    // 只监听当前连接的可读事件；有数据到达时 poll 会返回。
     poll_fd.fd = communicator_->fd();
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -88,6 +93,7 @@ public:
         break;
       } else if (0 == ret) {
         // LOG_TRACE("poll timeout. fd = %d", poll_fd.fd);
+        // 超时不是错误，继续循环并检查 running_。
         continue;
       }
 
@@ -105,6 +111,7 @@ public:
     }
 
     LOG_INFO("worker thread stop. communicator = %p", communicator_);
+    // 工作线程退出前通知宿主关闭并删除这个连接；之后当前 Worker 对象会被销毁。
     host_.close_connection(communicator_); /// 连接关闭后，当前对象会被删除
   }
 
@@ -124,6 +131,7 @@ OneThreadPerConnectionThreadHandler::~OneThreadPerConnectionThreadHandler()
 
 RC OneThreadPerConnectionThreadHandler::new_connection(Communicator *communicator)
 {
+  // 加锁保护 thread_map_，避免并发 accept 时同时修改。
   lock_guard guard(lock_);
 
   // 每个 Communicator 对应一个 Worker 和一个独立线程。
@@ -134,6 +142,7 @@ RC OneThreadPerConnectionThreadHandler::new_connection(Communicator *communicato
   }
 
   Worker *worker = new Worker(*this, communicator);
+  // 记录 Communicator -> Worker 的映射，便于后续关闭连接时找到对应线程。
   thread_map_[communicator] = worker;
   // start() 内部创建并启动真正的线程，之后该连接由 Worker::operator() 处理。
   return worker->start();
@@ -142,6 +151,7 @@ RC OneThreadPerConnectionThreadHandler::new_connection(Communicator *communicato
 RC OneThreadPerConnectionThreadHandler::close_connection(Communicator *communicator)
 {
   lock_.lock();
+  // 从映射表取出并移除该连接对应的 Worker。
   auto iter = thread_map_.find(communicator);
   if (iter == thread_map_.end()) {
     LOG_WARN("connection not exists. communicator = %p", communicator);
@@ -153,6 +163,7 @@ RC OneThreadPerConnectionThreadHandler::close_connection(Communicator *communica
   thread_map_.erase(iter);
   lock_.unlock();
 
+  // 停止并等待工作线程退出，然后释放 Worker 和 Communicator。
   worker->stop();
   worker->join();
   delete worker;
@@ -163,6 +174,7 @@ RC OneThreadPerConnectionThreadHandler::close_connection(Communicator *communica
 
 RC OneThreadPerConnectionThreadHandler::stop()
 {
+  // 遍历所有连接，逐个设置停止标志，让所有工作线程尽快退出。
   lock_guard guard(lock_);
   for (auto iter = thread_map_.begin(); iter != thread_map_.end(); ++iter) {
     Worker *worker = iter->second;
@@ -173,6 +185,7 @@ RC OneThreadPerConnectionThreadHandler::stop()
 
 RC OneThreadPerConnectionThreadHandler::await_stop()
 {
+  // 轮询等待 thread_map_ 被工作线程清空，即所有连接都已关闭。
   LOG_INFO("begin to await stop one thread per connection thread handler");
   while (!thread_map_.empty()) {
     this_thread::sleep_for(chrono::milliseconds(100));

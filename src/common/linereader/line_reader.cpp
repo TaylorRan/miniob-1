@@ -16,18 +16,22 @@ See the Mulan PSL v2 for more details. */
 #include "common/lang/string.h"
 
 namespace common {
+// 初始化三个成员：历史文件为空、上次保存时间为 0、每 5 秒自动保存一次历史。
 MiniobLineReader::MiniobLineReader() : history_file_(""), previous_history_save_time_(0), history_save_interval_(5) {}
 
+// 析构时最后保存一次历史记录，避免用户输入的命令丢失。
 MiniobLineReader::~MiniobLineReader() { reader_.history_save(history_file_); }
 
 MiniobLineReader &MiniobLineReader::instance()
 {
+  // 单例模式：static 局部变量保证整个进程只创建一次。
   static MiniobLineReader instance;
   return instance;
 }
 
 void MiniobLineReader::init(const std::string &history_file)
 {
+  // 记录历史文件路径，并把已有历史加载进 replxx。
   history_file_ = history_file;
   reader_.history_load(history_file_);
 }
@@ -37,6 +41,7 @@ std::string MiniobLineReader::my_readline(const std::string &prompt)
   // 用 replxx 读取一行带提示符的输入。replxx 还提供历史记录、移动光标等功能。
   const char *cinput = nullptr;
   cinput             = reader_.input(prompt);
+  // 返回 nullptr 通常表示输入结束（如 Ctrl+D），这里统一返回空字符串。
   if (cinput == nullptr) {
     return "";
   }
@@ -68,6 +73,7 @@ std::string MiniobLineReader::my_readline(const std::string &prompt)
 
 bool MiniobLineReader::is_exit_command(const std::string &cmd)
 {
+  // 先转小写再比较，让 EXIT、Exit、exit 都能被识别为退出命令。
   std::string lower_cmd = cmd;
   common::str_to_lower(lower_cmd);
 
@@ -79,6 +85,7 @@ bool MiniobLineReader::is_exit_command(const std::string &cmd)
 
 bool MiniobLineReader::check_and_save_history()
 {
+  // 不是每条命令都写盘，而是每隔一定时间才保存一次，减少磁盘 I/O。
   time_t current_time = time(nullptr);
   if (current_time - previous_history_save_time_ > history_save_interval_) {
     reader_.history_save(history_file_);

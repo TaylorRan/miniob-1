@@ -53,17 +53,20 @@ const std::string LINE_HISTORY_FILE = "./.obclient.history";
 // 创建并连接一个 Unix Domain Socket（本机进程间通信，不经过 TCP/IP）。
 int init_unix_sock(const char *unix_sock_path)
 {
+  // SOCK_STREAM 表示流式 socket，和 TCP 一样提供有序、可靠的字节流。
   int sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
   if (sockfd < 0) {
     fprintf(stderr, "failed to create unix socket. %s", strerror(errno));
     return -1;
   }
 
+  // Unix socket 地址结构体：先清零，再填协议族和路径。
   struct sockaddr_un sockaddr;
   memset(&sockaddr, 0, sizeof(sockaddr));
   sockaddr.sun_family = PF_UNIX;
   snprintf(sockaddr.sun_path, sizeof(sockaddr.sun_path), "%s", unix_sock_path);
 
+  // connect 成功表示和服务端建立好了连接，之后可以像读写文件一样读写 sockfd。
   if (connect(sockfd, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) < 0) {
     fprintf(stderr, "failed to connect to server. unix socket path '%s'. error %s", sockaddr.sun_path, strerror(errno));
     close(sockfd);
@@ -78,17 +81,21 @@ int init_tcp_sock(const char *server_host, int server_port)
   struct hostent    *host;
   struct sockaddr_in serv_addr;
 
+  // gethostbyname 把主机名或 IP 字符串解析成地址信息，用于填充连接参数。
   if ((host = gethostbyname(server_host)) == NULL) {
     fprintf(stderr, "gethostbyname failed. errmsg=%d:%s\n", errno, strerror(errno));
     return -1;
   }
 
   int sockfd;
+  // 创建 IPv4 + TCP 流式 socket。
   if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
     fprintf(stderr, "create socket error. errmsg=%d:%s\n", errno, strerror(errno));
     return -1;
   }
 
+  // 填充目标地址：协议族、端口、IP。
+  // htons 把主机字节序转成网络字节序（大端），网络协议要求端口使用网络字节序。
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_port   = htons(server_port);
   serv_addr.sin_addr   = *((struct in_addr *)host->h_addr);
@@ -122,6 +129,7 @@ int main(int argc, char *argv[])
   int          server_port      = PORT_DEFAULT;
   int          opt;
   extern char *optarg;
+  // getopt 解析命令行选项；optarg 是当前选项的参数值。
   while ((opt = getopt(argc, argv, "s:h:p:")) > 0) {
     switch (opt) {
       case 's': unix_socket_path = optarg; break;
@@ -147,6 +155,7 @@ int main(int argc, char *argv[])
   char send_buf[MAX_MEM_BUFFER_SIZE];
 
   std::string input_command = "";
+  // 初始化行读取器，加载命令历史，方便上下方向键翻历史。
   MiniobLineReader::instance().init(LINE_HISTORY_FILE);
 
   // 客户端主循环：读一行 SQL，发给服务端，再读回结果。
@@ -177,6 +186,7 @@ int main(int argc, char *argv[])
     int len = 0;
     while ((len = recv(sockfd, send_buf, MAX_MEM_BUFFER_SIZE, 0)) > 0) {
       bool msg_end = false;
+      // 逐字节检查响应中是否出现 '\0'，出现就说明一条完整响应已收完。
       for (int i = 0; i < len; i++) {
         if (0 == send_buf[i]) {
           msg_end = true;
@@ -187,6 +197,7 @@ int main(int argc, char *argv[])
       if (msg_end) {
         break; // 收到一条完整响应，结束本次接收。
       }
+      // 还没收完整，清空缓冲区继续 recv 下一段。
       memset(send_buf, 0, MAX_MEM_BUFFER_SIZE);
     }
 

@@ -21,23 +21,26 @@ See the Mulan PSL v2 for more details. */
 
 #include "net/buffered_writer.h"
 
-BufferedWriter::BufferedWriter(int fd) : fd_(fd), buffer_() {}
+BufferedWriter::BufferedWriter(int fd) : fd_(fd), buffer_() {} // 使用默认大小的 ring buffer
 
-BufferedWriter::BufferedWriter(int fd, int32_t size) : fd_(fd), buffer_(size) {}
+BufferedWriter::BufferedWriter(int fd, int32_t size) : fd_(fd), buffer_(size) {} // 指定缓冲区大小
 
 BufferedWriter::~BufferedWriter() { close(); }
 
 RC BufferedWriter::close()
 {
+  // 已经关闭过，直接返回成功，保证 close 可以重复调用。
   if (fd_ < 0) {
     return RC::SUCCESS;
   }
 
+  // 关闭前必须把缓冲区里剩余数据刷出去，避免丢数据。
   RC rc = flush();
   if (OB_FAIL(rc)) {
     return rc;
   }
 
+  // fd 置为无效值，防止之后误用。
   fd_ = -1;
 
   return RC::SUCCESS;
@@ -57,6 +60,7 @@ RC BufferedWriter::write(const char *data, int32_t size, int32_t &write_size)
     }
   }
 
+  // 真正把数据写入 ring buffer；write_size 返回本次实际写入的字节数。
   return buffer_.write(data, size, write_size);
 }
 
@@ -71,12 +75,13 @@ RC BufferedWriter::writen(const char *data, int32_t size)
   while (write_size < size) {
     int32_t tmp_write_size = 0;
 
+    // data + write_size 表示从上次没写完的位置继续写。
     RC rc = write(data + write_size, size - write_size, tmp_write_size);
     if (OB_FAIL(rc)) {
       return rc;
     }
 
-    write_size += tmp_write_size;
+    write_size += tmp_write_size; // 累计已写入字节数，驱动循环结束。
   }
 
   return RC::SUCCESS;
@@ -109,6 +114,7 @@ RC BufferedWriter::flush_internal(int32_t size)
   while (OB_SUCC(rc) && buffer_.size() > 0 && size > write_size) {
     const char *buf       = nullptr;
     int32_t     read_size = 0;
+    // buffer_.buffer 取出当前可发送的连续内存段和长度。
     rc                    = buffer_.buffer(buf, read_size);
     if (OB_FAIL(rc)) {
       return rc;
@@ -129,6 +135,7 @@ RC BufferedWriter::flush_internal(int32_t size)
     }
 
     write_size += tmp_write_size;
+    // forward 表示把已经发送成功的字节从 ring buffer 中消费掉。
     buffer_.forward(tmp_write_size);
   }
 
