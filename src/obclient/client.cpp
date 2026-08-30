@@ -40,7 +40,17 @@ using namespace common;
 
 const std::string LINE_HISTORY_FILE = "./.obclient.history";
 
-//创建并连接一个 Unix Domain Socket。
+// ============================================================================
+// 客户端整体工作流程：
+//   1. 解析命令行参数，确定是走 TCP 还是 Unix Domain Socket；
+//   2. 建立到服务端的连接；
+//   3. 循环：从终端读取一行 SQL -> 发送给服务端 -> 等待并打印服务端返回结果。
+//
+// 注意：这个文件只负责“网络收发”和“终端交互”，它不理解 SQL。
+// SQL 的具体解析和执行都在服务端完成。
+// ============================================================================
+
+// 创建并连接一个 Unix Domain Socket（本机进程间通信，不经过 TCP/IP）。
 int init_unix_sock(const char *unix_sock_path)
 {
   int sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
@@ -62,6 +72,7 @@ int init_unix_sock(const char *unix_sock_path)
   return sockfd;
 }
 
+// 创建并连接一个 TCP Socket，是默认的连接方式。
 int init_tcp_sock(const char *server_host, int server_port)
 {
   struct hostent    *host;
@@ -105,6 +116,7 @@ int main(int argc, char *argv[])
 {
   printf("%s", startup_tips);
 
+  // 默认连接本机 6789 端口；也可用 -s 指定 unix socket、-h 指定 host、-p 指定端口。
   const char  *unix_socket_path = nullptr;
   const char  *server_host      = "127.0.0.1";
   int          server_port      = PORT_DEFAULT;
@@ -122,6 +134,7 @@ int main(int argc, char *argv[])
 
   int sockfd, send_bytes;
 
+  // 根据参数选择连接方式，成功后会得到已经建立连接的 socket 文件描述符 sockfd。
   if (unix_socket_path != nullptr) {
     sockfd = init_unix_sock(unix_socket_path);
   } else {
@@ -136,17 +149,23 @@ int main(int argc, char *argv[])
   std::string input_command = "";
   MiniobLineReader::instance().init(LINE_HISTORY_FILE);
 
+  // 客户端主循环：读一行 SQL，发给服务端，再读回结果。
   while (true) {
     input_command = MiniobLineReader::instance().my_readline(prompt_str);
 
+    // 空行或纯空格不处理，直接重新等待输入。
     if (input_command.empty() || common::is_blank(input_command.c_str())) {
       continue;
     }
 
+    // 本地退出命令，不需要发给服务端。
     if (MiniobLineReader::instance().is_exit_command(input_command)) {
       break;
     }
 
+    // 关键点：发送长度是 length() + 1，多出的 1 个字节是字符串末尾的 '\0'。
+    // MiniOB 的默认文本协议就是用 '\0' 表示“一条 SQL 结束”，
+    // 所以这里要把结尾的 '\0' 一起发出去，服务端才能正确切分消息。
     if ((send_bytes = write(sockfd, input_command.c_str(), input_command.length() + 1)) == -1) {  // TODO writen
       fprintf(stderr, "send error: %d:%s \n", errno, strerror(errno));
       exit(1);
@@ -154,6 +173,7 @@ int main(int argc, char *argv[])
 
     memset(send_buf, 0, sizeof(send_buf));
 
+    // 发送完成后阻塞等待服务端响应，同样以 '\0' 作为响应结束标记。
     int len = 0;
     while ((len = recv(sockfd, send_buf, MAX_MEM_BUFFER_SIZE, 0)) > 0) {
       bool msg_end = false;
@@ -165,7 +185,7 @@ int main(int argc, char *argv[])
         printf("%c", send_buf[i]);
       }
       if (msg_end) {
-        break;
+        break; // 收到一条完整响应，结束本次接收。
       }
       memset(send_buf, 0, MAX_MEM_BUFFER_SIZE);
     }
@@ -181,7 +201,6 @@ int main(int argc, char *argv[])
   }
 
   close(sockfd);
-  cout << "Bye!" << endl;
 
   return 0;
 }

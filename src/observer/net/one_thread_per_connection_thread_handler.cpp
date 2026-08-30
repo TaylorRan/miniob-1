@@ -67,6 +67,7 @@ public:
 
   void operator()()
   {
+    // 每个连接都有自己的工作线程，这个函数就是该线程的主循环。
     LOG_INFO("worker thread start. communicator = %p", communicator_);
     int ret = thread_set_name("SQLWorker");
     if (ret != 0) {
@@ -79,6 +80,8 @@ public:
     poll_fd.revents = 0;
 
     while (running_) {
+      // 等待这个连接上有数据可读。poll 超时时间 500ms，超时后继续循环，
+      // 这样也能及时感知到 stop() 发出的退出信号。
       int ret = poll(&poll_fd, 1, 500);
       if (ret < 0) {
         LOG_WARN("poll error. fd = %d, ret = %d, error=%s", poll_fd.fd, ret, strerror(errno));
@@ -93,6 +96,7 @@ public:
         break;
       }
 
+      // 有请求到达，交给 SqlTaskHandler：读取 SQL -> 解析 -> 优化 -> 执行 -> 写回结果。
       RC rc = task_handler_.handle_event(communicator_);
       if (OB_FAIL(rc)) {
         LOG_ERROR("handle error. rc = %s", strrc(rc));
@@ -122,6 +126,7 @@ RC OneThreadPerConnectionThreadHandler::new_connection(Communicator *communicato
 {
   lock_guard guard(lock_);
 
+  // 每个 Communicator 对应一个 Worker 和一个独立线程。
   auto iter = thread_map_.find(communicator);
   if (iter != thread_map_.end()) {
     LOG_WARN("connection already exists. communicator = %p", communicator);
@@ -130,6 +135,7 @@ RC OneThreadPerConnectionThreadHandler::new_connection(Communicator *communicato
 
   Worker *worker = new Worker(*this, communicator);
   thread_map_[communicator] = worker;
+  // start() 内部创建并启动真正的线程，之后该连接由 Worker::operator() 处理。
   return worker->start();
 }
 

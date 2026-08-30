@@ -34,6 +34,7 @@ void MiniobLineReader::init(const std::string &history_file)
 
 std::string MiniobLineReader::my_readline(const std::string &prompt)
 {
+  // 用 replxx 读取一行带提示符的输入。replxx 还提供历史记录、移动光标等功能。
   const char *cinput = nullptr;
   cinput             = reader_.input(prompt);
   if (cinput == nullptr) {
@@ -43,10 +44,12 @@ std::string MiniobLineReader::my_readline(const std::string &prompt)
   std::string line = cinput;
   cinput           = nullptr;
 
+  // 空行直接返回空字符串，由调用方决定如何处理。
   if (line.empty()) {
     return "";
   }
 
+  // 只有包含非空白字符的输入才算有效命令，才会写入历史记录。
   bool is_valid_input = false;
   for (auto c : line) {
     if (!isspace(c)) {

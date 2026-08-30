@@ -23,6 +23,8 @@ See the Mulan PSL v2 for more details. */
 
 RC Communicator::init(int fd, unique_ptr<Session> session, const string &addr)
 {
+  // 保存连接 fd、对端地址和会话对象，并创建一个带缓冲的写出器，
+  // 之后发送结果都先写进缓冲区，再批量 flush 到 socket。
   fd_      = fd;
   session_ = std::move(session);
   addr_    = addr;
@@ -47,6 +49,8 @@ Communicator::~Communicator()
 
 Communicator *CommunicatorFactory::create(CommunicateProtocol protocol)
 {
+  // 根据服务端启动时指定的协议，创建对应的收发实现。
+  // 默认是 PLAIN 文本协议，也支持 CLI（直接读写终端）和 MYSQL 协议。
   switch (protocol) {
     case CommunicateProtocol::PLAIN: {
       return new PlainCommunicator;

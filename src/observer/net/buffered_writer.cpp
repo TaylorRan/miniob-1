@@ -49,6 +49,7 @@ RC BufferedWriter::write(const char *data, int32_t size, int32_t &write_size)
     return RC::INVALID_ARGUMENT;
   }
 
+  // 缓冲区满了就先刷一部分出去，腾出空间再写入。
   if (buffer_.remain() == 0) {
     RC rc = flush_internal(size);
     if (OB_FAIL(rc)) {
@@ -65,6 +66,7 @@ RC BufferedWriter::writen(const char *data, int32_t size)
     return RC::INVALID_ARGUMENT;
   }
 
+  // 与 write 的区别：writen 会循环写，直到 size 个字节全部写完才算成功。
   int32_t write_size = 0;
   while (write_size < size) {
     int32_t tmp_write_size = 0;
@@ -87,6 +89,7 @@ RC BufferedWriter::flush()
   }
 
   RC rc = RC::SUCCESS;
+  // 只要缓冲区里还有数据，就一直刷到 socket，直到写完。
   while (OB_SUCC(rc) && buffer_.size() > 0) {
     rc = flush_internal(buffer_.size());
   }
@@ -102,6 +105,7 @@ RC BufferedWriter::flush_internal(int32_t size)
   RC rc = RC::SUCCESS;
 
   int32_t write_size = 0;
+  // 从 ring buffer 取出连续数据，调用底层 write 发送；网络写不完整时会循环。
   while (OB_SUCC(rc) && buffer_.size() > 0 && size > write_size) {
     const char *buf       = nullptr;
     int32_t     read_size = 0;
@@ -114,6 +118,7 @@ RC BufferedWriter::flush_internal(int32_t size)
     while (tmp_write_size == 0) {
       tmp_write_size = ::write(fd_, buf, read_size);
       if (tmp_write_size < 0) {
+        // EAGAIN 表示缓冲区暂时写不下，EINTR 表示被信号打断，都重试即可。
         if (errno == EAGAIN || errno == EINTR) {
           tmp_write_size = 0;
           continue;

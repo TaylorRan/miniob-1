@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 #include "session_event.h"
 #include "net/communicator.h"
 
+// SessionEvent 代表“一次客户端请求”。
+// 它保存这条 SQL 文本、所属会话、执行结果和调试信息，贯穿整个处理过程。
 SessionEvent::SessionEvent(Communicator *comm) : communicator_(comm), sql_result_(communicator_->session()) {}
 
 SessionEvent::~SessionEvent() {}

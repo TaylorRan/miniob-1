@@ -20,6 +20,7 @@ See the Mulan PSL v2 for more details. */
 
 RC SqlTaskHandler::handle_event(Communicator *communicator)
 {
+  // 工作线程入口：读取一条请求 -> 处理这条 SQL -> 把结果写回客户端。
   SessionEvent *event = nullptr;
   RC rc = communicator->read_event(event);
   if (OB_FAIL(rc)) {
@@ -32,6 +33,7 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 
   session_stage_.handle_request2(event);
 
+  // SQLStageEvent 在 SessionEvent 之上封装 SQL 文本，供后续各阶段传递。
   SQLStageEvent sql_event(event, event->query());
 
   rc = handle_sql(&sql_event);
@@ -42,6 +44,7 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 
   bool need_disconnect = false;
 
+  // 处理完成后，把结果（状态码、表头、数据行）写回客户端。
   rc = communicator->write_result(event, need_disconnect);
   LOG_INFO("write result return %s", strrc(rc));
   event->session()->set_current_request(nullptr);
@@ -49,6 +52,7 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 
   delete event;
 
+  // 如果通信层标记需要断开（如读写错误），返回失败让上层结束工作线程。
   if (need_disconnect) {
     return RC::INTERNAL;
   }
@@ -57,6 +61,12 @@ RC SqlTaskHandler::handle_event(Communicator *communicator)
 
 RC SqlTaskHandler::handle_sql(SQLStageEvent *sql_event)
 {
+  // MiniOB 的 SQL 处理流水线，像工厂流水线一样按顺序经过五个阶段：
+  //   query_cache：查询缓存，命中则直接返回结果；
+  //   parse：      词法+语法解析，SQL 文本 -> ParsedSqlNode 语法树；
+  //   resolve：    语义解析，语法树 -> Stmt（绑定表、字段等信息）；
+  //   optimize：   优化，Stmt -> 逻辑计划 -> 物理执行计划；
+  //   execute：    执行，把执行计划挂到结果对象上，真正取数发生在写回结果阶段。
   RC rc = query_cache_stage_.handle_request(sql_event);
   if (OB_FAIL(rc)) {
     LOG_TRACE("failed to do query cache. rc=%s", strrc(rc));

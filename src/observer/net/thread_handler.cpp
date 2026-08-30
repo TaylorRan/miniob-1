@@ -22,6 +22,8 @@ See the Mulan PSL v2 for more details. */
 
 ThreadHandler * ThreadHandler::create(const char *name)
 {
+  // 根据配置名字创建对应的线程模型。
+  // 默认是 one-thread-per-connection：一个连接一个线程，实现简单、适合学习。
   const char *default_name = "one-thread-per-connection";
   if (nullptr == name || common::is_blank(name)) {
     name = default_name;

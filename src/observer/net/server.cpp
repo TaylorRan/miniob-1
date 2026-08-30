@@ -60,6 +60,7 @@ NetServer::~NetServer()
 
 int NetServer::set_non_block(int fd)
 {
+  // 把 socket 设为非阻塞模式，避免线程在 read/accept 上卡死。
   int flags = fcntl(fd, F_GETFL);
   if (flags == -1) {
     LOG_INFO("Failed to get flags of fd :%d. ", fd);
@@ -76,6 +77,8 @@ int NetServer::set_non_block(int fd)
 
 void NetServer::accept(int fd)
 {
+  // 监听 socket 上有新连接到达时，这里把真正的客户端连接 accept 出来，
+  // 并为这个连接创建 Communicator（负责协议收发）和 Session（会话状态）。
   struct sockaddr_in addr;
   socklen_t          addrlen = sizeof(addr);
 
@@ -106,6 +109,7 @@ void NetServer::accept(int fd)
 
   if (!server_param_.use_unix_socket) {
     // unix socket不支持设置NODELAY
+    // TCP_NODELAY 关闭 Nagle 算法，让小的 SQL 请求尽快发出，降低延迟。
     int yes = 1;
     ret     = setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
     if (ret < 0) {
@@ -117,6 +121,7 @@ void NetServer::accept(int fd)
 
   Communicator *communicator = communicator_factory_.create(server_param_.protocol);
 
+  // Communicator 持有连接 fd、Session 和缓冲写出器，后续所有收发都通过它完成。
   RC rc = communicator->init(client_fd, make_unique<Session>(Session::default_session()), addr_str);
   if (rc != RC::SUCCESS) {
     LOG_WARN("failed to init communicator. rc=%s", strrc(rc));
@@ -126,6 +131,7 @@ void NetServer::accept(int fd)
 
   LOG_INFO("Accepted connection from %s\n", communicator->addr());
 
+  // 把连接交给线程模型：默认“一个连接一个线程”，由独立线程循环读取该连接的请求。
   rc = thread_handler_->new_connection(communicator);
   if (OB_FAIL(rc)) {
     LOG_WARN("failed to handle new connection. rc=%s", strrc(rc));
@@ -147,6 +153,8 @@ int NetServer::start()
 
 int NetServer::start_tcp_server()
 {
+  // 标准 TCP 服务器启动流程：socket -> bind -> listen。
+  // 这里只负责“监听连接”，不负责处理业务请求。
   int                ret = 0;
   struct sockaddr_in sa;
 
@@ -241,6 +249,10 @@ int NetServer::start_unix_socket_server()
 
 int NetServer::serve()
 {
+  // serve 是网络服务器的主循环：
+  //   1. 创建线程模型；
+  //   2. 启动监听 socket；
+  //   3. 循环 poll 监听 socket，有新连接就 accept。
   thread_handler_ = ThreadHandler::create(server_param_.thread_handling.c_str());
   if (thread_handler_ == nullptr) {
     LOG_ERROR("Failed to create thread handler: %s", server_param_.thread_handling.c_str());
@@ -260,6 +272,7 @@ int NetServer::serve()
   }
 
   if (!server_param_.use_std_io) {
+    // 只监听一个 socket，用 poll 轮询是否有新连接到达。
     struct pollfd poll_fd;
     poll_fd.fd      = server_socket_;
     poll_fd.events  = POLLIN;
@@ -280,6 +293,7 @@ int NetServer::serve()
         break;
       }
 
+      // 有新连接事件，调用 accept 完成三次握手并交给工作线程。
       this->accept(server_socket_);
     }
   }

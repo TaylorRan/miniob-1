@@ -22,6 +22,8 @@ See the Mulan PSL v2 for more details. */
 
 PlainCommunicator::PlainCommunicator()
 {
+  // 默认文本协议的“消息结束符”是 '\0'。
+  // 客户端发送 SQL 时会把字符串末尾的 '\0' 一起发来，服务端据此判断一条消息是否完整。
   send_message_delimiter_.assign(1, '\0');
   debug_message_prefix_.resize(2);
   debug_message_prefix_[0] = '#';
@@ -41,6 +43,7 @@ RC PlainCommunicator::read_event(SessionEvent *&event)
   vector<char> buf(max_packet_size);
 
   // 持续接收消息，直到遇到'\0'。将'\0'遇到的后续数据直接丢弃没有处理，因为目前仅支持一收一发的模式
+  // 也就是说：一次只处理一条 SQL，读到结束符 '\0' 就停止。
   while (true) {
     read_len = ::read(fd_, buf.data() + data_len, max_packet_size - data_len);
     if (read_len < 0) {
@@ -87,6 +90,7 @@ RC PlainCommunicator::read_event(SessionEvent *&event)
   }
 
   LOG_INFO("receive command(size=%d): %s", data_len, buf.data());
+  // 把刚收到的 SQL 文本放进 SessionEvent，后面 SqlTaskHandler 会从这个事件里取出 SQL。
   event = new SessionEvent(this);
   event->set_query(string(buf.data()));
   return rc;
@@ -159,6 +163,10 @@ RC PlainCommunicator::write_debug(SessionEvent *request, bool &need_disconnect)
 
 RC PlainCommunicator::write_result(SessionEvent *event, bool &need_disconnect)
 {
+  // 返回结果的顺序：
+  //   1. write_result_internal：写状态、表头和数据行；
+  //   2. write_debug：如果打开了 SQL 调试开关，再附加调试信息；
+  //   3. 最后写一个 '\0' 表示响应结束，并 flush 缓冲。
   RC rc = write_result_internal(event, need_disconnect);
   if (!need_disconnect) {
     RC rc1 = write_debug(event, need_disconnect);
@@ -186,10 +194,12 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
 
   SqlResult *sql_result = event->sql_result();
 
+  // 没有执行计划（例如 DDL），或者前面阶段已经失败，就只回一个状态字符串。
   if (RC::SUCCESS != sql_result->return_code() || !sql_result->has_operator()) {
     return write_state(event, need_disconnect);
   }
 
+  // 打开执行计划：这里会启动事务，并递归调用执行计划顶层算子的 open()。
   rc = sql_result->open();
   if (OB_FAIL(rc)) {
     sql_result->close();
@@ -200,6 +210,7 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   const TupleSchema &schema   = sql_result->tuple_schema();
   const int          cell_num = schema.cell_num();
 
+  // 先写表头：每列的名字/别名用 " | " 分隔，最后换行。
   for (int i = 0; i < cell_num; i++) {
     const TupleCellSpec &spec  = schema.cell_at(i);
     const char          *alias = spec.alias();
@@ -237,6 +248,7 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   }
 
   rc = RC::SUCCESS;
+  // 再写数据：根据执行模式选择“一行一行”还是“一 chunk 一 chunk”读取。
   if (event->session()->get_execution_mode() == ExecutionMode::CHUNK_ITERATOR
       && event->session()->used_chunk_mode()) {
     rc = write_chunk_result(sql_result);
@@ -274,6 +286,7 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
 {
   RC rc = RC::SUCCESS;
   Tuple *tuple = nullptr;
+  // 不断调用 next_tuple 取下一行，直到返回 RECORD_EOF 表示没有更多数据。
   while (RC::SUCCESS == (rc = sql_result->next_tuple(tuple))) {
     assert(tuple != nullptr);
 
