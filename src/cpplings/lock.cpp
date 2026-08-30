@@ -26,7 +26,9 @@ scoped_lock 不支持手动锁定和解锁，也不支持条件变量。
 #include <iostream>  // std::cout
 #include <thread>    // std::thread
 #include <vector>    // std::vector
+#include <mutex>
 #include <cassert>   // assert
+static std::mutex mtx;
 
 struct Node
 {
@@ -39,6 +41,7 @@ Node *list_head(nullptr);
 // 向 `list_head` 中添加一个 value 为 `val` 的 Node 节点。
 void append_node(int val)
 {
+  std::scoped_lock lock(mtx);
   Node *old_head = list_head;
   Node *new_node = new Node{val, old_head};
 

@@ -32,14 +32,15 @@ See the Mulan PSL v2 for more details. */
 #include "common/linereader/line_reader.h"
 #include "common/log/log.h"
 
-#define MAX_MEM_BUFFER_SIZE 8192
-#define PORT_DEFAULT 6789
+#define MAX_MEM_BUFFER_SIZE 8192    //收数据缓冲区大小，和协议最大消息长度一致。
+#define PORT_DEFAULT 6789   //默认服务端口
 
 using namespace std;
 using namespace common;
 
 const std::string LINE_HISTORY_FILE = "./.obclient.history";
 
+//创建并连接一个 Unix Domain Socket。
 int init_unix_sock(const char *unix_sock_path)
 {
   int sockfd = socket(PF_UNIX, SOCK_STREAM, 0);

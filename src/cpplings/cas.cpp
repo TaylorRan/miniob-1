@@ -41,7 +41,6 @@ void append_node(int val)
     new_node->next = old_head;
   }while(!list_head.compare_exchange_strong(old_head, new_node));
   
-  
   // mtx.unlock();
 }
 
