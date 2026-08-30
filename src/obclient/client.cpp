@@ -181,6 +181,9 @@ int main(int argc, char *argv[])
   }
 
   close(sockfd);
+  cout << "Bye!" << endl;
 
   return 0;
 }
+
+
